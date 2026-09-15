@@ -31,7 +31,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 TEFF = 5000.0                    # K, temperature of the flat lamp
-NPOLY = 11                        # polynomial order of log(transmission)
+NPOLY = 11                       # polynomial order of log(transmission)
 HC_K = 1.438776877e7             # h*c/k_B in nm.K
 SIGMA_CLIP = 5.0
 THETA_B0 = np.radians(45.0)      # neutral start for the blaze angle, it is fitted

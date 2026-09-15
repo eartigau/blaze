@@ -10,6 +10,11 @@ Nothing is hard-coded for a particular instrument. The diffraction orders are
 read off the wavelength solution, and the grating constants are fitted. The
 example data shipped here is SPIRou (CFHT), reduced with APERO.
 
+![observed blaze and fitted model](docs/fit.png)
+
+*49 orders of a flat lamp, the model on top of them, and what is left over. One
+set of parameters for the whole array: no per-order normalisation, no smoothing.*
+
 ---
 
 ## The model
@@ -26,6 +31,11 @@ model(m, i) = BB_photon(lambda, Teff) x Trans(lambda) x sinc^2(blaze) x dlambda/
 | `Trans` | `exp(P(lambda))`, i.e. `log(transmission)` is a polynomial. Its constant term carries the global amplitude | filters, coatings, fibre and detector QE. It is by far the largest term, a factor of ~20 across the SPIRou range |
 | `sinc^2` | single-groove diffraction envelope of the grating | the blaze proper, the only term that knows about `m` |
 | `dlambda/dpixel` | width of a pixel in wavelength | the wavelength solution is not linear, so this varies by ~28% along a SPIRou order and tilts every one of them |
+
+![the four components of the model](docs/components.png)
+
+*The four terms, on the same wavelength axis. Only the third one knows about the
+diffraction order. Colour runs from the bluest order to the reddest.*
 
 ### The grating envelope
 
@@ -71,6 +81,14 @@ On the included data both give orders **79 (bluest) down to 31 (reddest)**, the
 published SPIRou numbering. The flatness criterion is unambiguous: relative
 scatter `1.8e-3` for the best offset against `4.0e-3` for the runner-up.
 
+![order identification and peak drift](docs/orders.png)
+
+*Left: the scatter of `m.lambda` against the trial order number, more than a
+decade deep at the right answer. Right: `m.lambda_peak` is not constant, and a
+model with a strictly constant `C` reproduces that drift, because it comes from
+the slope of the lamp spectrum pulling the observed maximum off the true blaze
+peak.*
+
 `fit_blaze.py` has this built in as `diffraction_orders()`. It handles orders
 stored either way round (blue to red or red to blue) and a subset of the array.
 
@@ -95,6 +113,10 @@ extracted flat-lamp spectrum and its wavelength solution. NaNs are ignored.
 | `blaze_model.fits` | the model spectrum, same shape as the input, fitted parameters in the header (`MODCST`, `MODBETA`, `MODTHETA`, `MODTR*`, ...) |
 | `blaze_model_debug.pdf` | 4 pages: observed vs model over the whole range, the model components separated, a panel per order, and the peak-drift check |
 | `blaze_orders.pdf` | the order identification from `mkblaze.py` |
+
+The figures in this README are built separately by `docs/make_figures.py`, which
+rebuilds the model from the header of `blaze_model.fits` rather than re-fitting,
+and checks the two agree before plotting.
 
 The model is evaluated on **every pixel of every order**, including where the
 pipeline threw the blaze away, so it can be used to extend or replace a
@@ -126,6 +148,11 @@ blaze angle        = 65.26 deg (R2.2 grating)
 groove spacing     = 23.64 grooves/mm
 obs/model - 1      : median 3.06%, rms 5.69%
 ```
+
+![three orders close up](docs/orders_zoom.png)
+
+*Three orders at full scale. The asymmetry of the observed profile is real and
+the un-linearised `sinc^2` follows most of it.*
 
 Two sanity checks worth pointing at:
 
