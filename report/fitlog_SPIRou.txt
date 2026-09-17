@@ -1,0 +1,20 @@
+pass 1: C(1496) =   76796.6   dC/dlambda = -0.1177   beta = 0.8557   asym = -3.543   rms =  5.44%   162737 points kept
+pass 2: C(1496) =   76797.9   dC/dlambda = -0.1154   beta = 0.8557   asym = -3.434   rms =  2.61%   162190 points kept
+pass 3: C(1496) =   76798.1   dC/dlambda = -0.1147   beta = 0.8556   asym = -3.432   rms =  2.39%   161758 points kept
+
+diffraction orders 79 to 31
+fit restricted to lambda < 2500.0: 163678 points used, 0 left free
+model evaluated on all 200312 pixels, 18.3% of which have no observed blaze
+C = m * lambda_blaze = 2.d.sin(theta_b).cos(gamma) = a0 + a1 * lambda
+    a0 = 76969.79   a1 = -0.11474
+    76742.3 from the blaze peaks; after the fit 76859.1 at 965, 76798.1 at 1496, 76684.1 at 2490
+    i.e. dlnC/dlnlambda = -0.00224, C changes by -0.228% across the array
+blaze width beta = 0.8556   (1 = first zeros one FSR from the peak)
+envelope asymmetry asym = -3.432
+transmission: degree 1 spline through 49 order peaks, knot = median over +-50 px
+obs/model - 1 over the fitted range : median |.| = 0.90%   rms = 4.26%
+   of which order-to-order offsets 1.80% rms, within-order 3.57% rms
+   median of the per-order rms 1.64%, worst orders m=31 (21%), m=78 (5%), m=35 (5%)
+drift of m*lambda_peak over the 49 fully fitted orders: 803 observed, 635 reproduced by the model
+model spectrum written to blaze_model.fits
+debug plots written to blaze_model_debug.pdf

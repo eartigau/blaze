@@ -10,6 +10,9 @@ Nothing is hard-coded for a particular instrument. The diffraction orders are
 read off the wavelength solution, and the grating constants are fitted. The
 example data shipped here is SPIRou (CFHT), reduced with APERO.
 
+The full characterisation, with an MCMC of the grating parameters, is written
+up in [`report/blaze_report.pdf`](report/blaze_report.pdf).
+
 ![observed blaze and fitted model](docs/fit.png)
 
 *49 orders of a flat lamp, the model on top of them, and what is left over. One
@@ -151,6 +154,63 @@ python fit_blaze.py myblaze.fits mywave.fits    # any other instrument
 Both files are 2D arrays of the same shape, `(n_orders, n_pixels)`: the
 extracted flat-lamp spectrum and its wavelength solution. NaNs are ignored.
 
+## Full characterisation
+
+`characterize.py` runs everything: the order identification, the fit, an MCMC
+of the grating parameters, a jackknife over orders, profile tests and a
+comparison of transmission models. It then writes a LaTeX report,
+[`report/blaze_report.pdf`](report/blaze_report.pdf).
+
+```bash
+pip install numpy scipy astropy matplotlib emcee corner
+python characterize.py                    # analysis + figures + PDF report (about 15 min)
+python characterize.py --no-report        # analysis only, summary printed, no figures, no LaTeX
+python characterize.py --report-only      # rebuild figures and PDF from existing results
+python characterize.py --no-report --instrument SPIRou       # one configured instrument
+python characterize.py --no-report --skip-comparison         # skip the model comparison
+python characterize.py --no-report --name MYINST \
+        --blaze myblaze.fits --wave mywave.fits [--littrow-tan 2]   # any other instrument
+```
+
+| mode | what it does | needs |
+|---|---|---|
+| default | analysis of SPIRou and NIRPS, figures, compiled report | both instruments' files, `pdflatex`, `bibtex` |
+| `--no-report` | analysis only, prints the posterior, jackknife and tests; results in `report/work/<instrument>/` | the files of the instruments analysed |
+| `--report-only` | figures and PDF from the results already in `report/work/` | a previous full run |
+
+The report is written for SPIRou and NIRPS together, so building it needs the
+NIRPS files, which are **not** in this repository. Without them, use
+`--no-report`: the analysis of SPIRou, or of any instrument given with
+`--name/--blaze/--wave`, runs on its own. `--littrow-tan` is the tangent of the
+nominal blaze angle and only enables the Littrow asymmetry test.
+
+### MCMC results
+
+Posterior median and 68% half-width, with the jackknife uncertainty in
+brackets. `C(lref)` is in nm at the reference wavelength (1496 nm for SPIRou,
+1336 nm for NIRPS), `dC/dlambda` in nm per nm, and `Delta C` is the change of
+`C` across the array, in %.
+
+| | `C(lref)` | `dC/dlambda` | `beta` | `asym` | `Delta C` |
+|---|---|---|---|---|---|
+| **SPIRou** | 76802.0 +- 1.4 (2.2) | -0.1070 +- 0.0026 (0.0044) | 0.8560 +- 0.0008 (0.0011) | -3.45 +- 0.19 (0.32) | -0.212 +- 0.005 (0.009) |
+| **NIRPS** | 145026.0 +- 1.7 (2.3) | -0.0748 +- 0.0043 (0.0058) | 0.8584 +- 0.0014 (0.0032) | 5.51 +- 0.60 (0.89) | -0.051 +- 0.003 (0.004) |
+
+* The chromatic term is detected at 24 sigma on SPIRou and 13 sigma on NIRPS,
+  even with the jackknife uncertainties. Forcing `C` constant costs
+  `Delta ln L` = 268 and 100.
+* The jackknife uncertainties are 1.4 to 2.3 times the MCMC ones: quote those.
+* The lamp temperature is not constrained: from 2500 to 30000 K the
+  log-likelihood spans less than 0.4 and no grating parameter moves by more
+  than 0.12 of its uncertainty.
+
+What the MCMC does, briefly: the residuals of the model are correlated over
+~600 pixels along an order and have heavy tails, so the likelihood is a
+Student-t on the log residual, tempered by the correlation length so that
+pixels are not counted as independent. The transmission is profiled at every
+step. The report compares the posterior widths with a jackknife over orders,
+which does not depend on that tempering.
+
 ## What comes out
 
 | file | content |
@@ -280,10 +340,12 @@ transmission bends hardest.
 * **`asym` is a shape parameter, not a blaze angle.** In Littrow it would be
   `tan(theta_b)^2 / 2 - 1`, i.e. +1 for SPIRou's R2 grating and +7 for NIRPS's
   R4. With `C` held constant the fit did land there (63.4 and 76 deg), but that
-  was the asymmetry standing in for the missing chromatic term: once `C` is
+  was the asymmetry standing in for the missing chromatic term. Once `C` is
   allowed to vary, SPIRou wants -3.4, which no grating angle can give, and the
-  NIRPS value moves between +2.7 and +3.5 depending on the transmission model
-  and the clipping. Do not read a grating geometry into it.
+  R2 value is excluded (`Delta ln L` = 134). NIRPS stays within 2.5 sigma of its
+  R4 value (`Delta ln L` = 3), but its `asym` moves from +2.7 to +5.5 with the
+  transmission model and the weighting of the residuals. Do not read a grating
+  geometry into it.
 * APERO thresholds its blaze at 25% of the peak, so only the top of the `sinc^2`
   is ever constrained on this data.
 

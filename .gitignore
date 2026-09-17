@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
 .DS_Store
+report/work/
+report/work_*.log
+report/*.aux
+report/*.bbl
+report/*.blg
+report/*.log
+report/*.out
+report/*.toc
