@@ -148,6 +148,8 @@ stored either way round (blue to red or red to blue) and a subset of the array.
 pip install numpy scipy astropy matplotlib
 python mkblaze.py                 # identify the diffraction orders
 python fit_blaze.py               # fit the model
+python fit_blaze.py NIRPS_2023-04-01T12_07_06_942_pp_blaze_A.fits \
+    NIRPS_2025-09-13T21_30_32_350_pp_e2dsff_A_wave_night_A.fits     # NIRPS
 python fit_blaze.py myblaze.fits mywave.fits    # any other instrument
 ```
 
@@ -178,11 +180,11 @@ python characterize.py --no-report --name MYINST \
 | `--no-report` | analysis only, prints the posterior, jackknife and tests; results in `report/work/<instrument>/` | the files of the instruments analysed |
 | `--report-only` | figures and PDF from the results already in `report/work/` | a previous full run |
 
-The report is written for SPIRou and NIRPS together, so building it needs the
-NIRPS files, which are **not** in this repository. Without them, use
-`--no-report`: the analysis of SPIRou, or of any instrument given with
-`--name/--blaze/--wave`, runs on its own. `--littrow-tan` is the tangent of the
-nominal blaze angle and only enables the Littrow asymmetry test.
+The report is written for SPIRou and NIRPS together. The files of both
+instruments are in the repository, so a fresh clone can rebuild it. For any
+other instrument, use `--no-report` with `--name/--blaze/--wave`.
+`--littrow-tan` is the tangent of the nominal blaze angle and only enables the
+Littrow asymmetry test.
 
 ### MCMC results
 
@@ -210,6 +212,19 @@ Student-t on the log residual, tempered by the correlation length so that
 pixels are not counted as independent. The transmission is profiled at every
 step. The report compares the posterior widths with a jackknife over orders,
 which does not depend on that tempering.
+
+## Data in this repository
+
+Two APERO products per instrument, each a 2D array `(n_orders, n_pixels)`.
+
+| instrument | file | content |
+|---|---|---|
+| SPIRou | `FDFCD50E5Ff_pp_blaze_AB.fits` | blaze (extracted flat), 49 x 4088 |
+| SPIRou | `FEF450D367a_pp_e2dsff_AB_wave_night_AB.fits` | wavelength solution |
+| NIRPS | `NIRPS_2023-04-01T12_07_06_942_pp_blaze_A.fits` | blaze (extracted flat), 75 x 4088 |
+| NIRPS | `NIRPS_2025-09-13T21_30_32_350_pp_e2dsff_A_wave_night_A.fits` | wavelength solution |
+
+`python fit_blaze.py` with no argument uses the SPIRou pair.
 
 ## What comes out
 
@@ -289,7 +304,9 @@ obs/model - 1      : median 1.20%, median per-order rms 1.85%
 ```
 
 `C` is chromatic there too, about four times less than on SPIRou. The NIRPS
-files are not in this repository.
+blaze (2023-04-01) and wavelength solution (2025-09-13) were taken two years
+apart; the fit is good regardless, but a drift of the wavelength solution
+between the two dates cannot be ruled out.
 
 ### Spline or polynomial
 

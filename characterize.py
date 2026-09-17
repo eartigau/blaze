@@ -9,9 +9,9 @@ fit_blaze.py, samples the grating parameters with an MCMC, runs a jackknife
 over orders and profile tests, and compares transmission models. Results go
 to report/work/<instrument>/. The report is report/blaze_report.pdf.
 
-By default the two configured instruments are used, SPIRou and NIRPS
-(the NIRPS files are not part of the repository). Any other instrument can be
-characterised without a report:
+By default the two configured instruments are used, SPIRou and NIRPS, whose
+files are in the repository. Any other instrument can be characterised
+without a report:
 
     python characterize.py --no-report --name MYINST --blaze b.fits --wave w.fits
 """
