@@ -40,21 +40,43 @@ diffraction order. Colour runs from the bluest order to the reddest.*
 ### The grating envelope
 
 The natural variable of the blaze function is the distance to the blaze peak
-counted **in orders**,
+counted **in orders**. With `e = m.lambda / C - 1`, which is 0 at the peak and
+about `+-1/m` at the edges of an order,
 
 ```
-x = m (lambda - lambda_blaze) / lambda_blaze      with    m . lambda_blaze = C
+blaze = sinc^2( beta . m . (e + asym . e^2) )      with    m . lambda_blaze = C
 ```
 
 `C = 2 d sin(theta_b) cos(gamma)` is the grating spacing as the beam sees it:
-the optical path difference between two adjacent grooves at the blaze peak. It
-is the same number for every order, which is what makes a single fit possible.
-The code uses the un-linearised form of the argument, which is slightly
-asymmetric in wavelength and brings in the blaze angle `theta_b`.
+the optical path difference between two adjacent grooves at the blaze peak.
 
 `beta` scales the width of the envelope. `beta = 1` means a fully illuminated
 groove, i.e. the first zeros of the `sinc^2` fall exactly one free spectral
 range away from the peak.
+
+`asym` makes the envelope lopsided in wavelength. Expanding the exact grating
+equation in Littrow gives `asym = tan(theta_b)^2 / 2 - 1`, so in principle it
+measures the blaze angle. It is left free because the data do not follow that
+relation, see the limitations.
+
+### A chromatic C
+
+`C` is not quite the same for every order:
+
+```
+C(lambda) = a0 + a1 . lambda
+```
+
+The grooves are the same for all orders, but the angle `gamma` at which the
+beam meets them need not be. SPIRou's cross-disperser, a train of two ZnSe
+prisms and one Infrasil prism, is used in **double pass**: the beam crosses it
+once before the échelle and once after
+([Donati et al. 2020](https://arxiv.org/pdf/2008.08949)). It therefore reaches
+the grating already dispersed, `gamma` depends on wavelength, and so does
+`C = 2 d sin(theta_b) cos(gamma)`. On SPIRou the fit finds `C` decreasing by
+0.23% from 965 to 2490 nm, and the result is the same whether the transmission
+is a spline or a polynomial (-0.228% and -0.229%). With `C` held constant, the
+observed peaks sit 50 to 200 pixels bluer than the model across the red half of the array.
 
 ### The transmission
 
@@ -77,8 +99,11 @@ polynomial](#spline-or-polynomial) below.
 
 ### Free parameters
 
-Three non-linear parameters, `C`, `beta` and `theta_b`. The transmission never
-goes through the non-linear solver: the spline knots are read straight off the
+Four non-linear parameters: the two coefficients of `C(lambda)`, `beta` and
+`asym`. Inside the fit, `C` is written around a reference wavelength, the
+median of the fitted pixels, so that its two coefficients are not correlated;
+`a0` and `a1` are derived from them. The transmission never goes through the
+non-linear solver: the spline knots are read straight off the
 data for the current grating parameters, and a polynomial would be solved by
 linear least squares, since `log(transmission)` enters linearly. The fit takes
 about a second on a 49 x 4088 array and is followed by two passes of sigma
@@ -104,10 +129,10 @@ scatter `1.8e-3` for the best offset against `4.0e-3` for the runner-up.
 ![order identification and peak drift](docs/orders.png)
 
 *Left: the scatter of `m.lambda` against the trial order number, more than a
-decade deep at the right answer. Right: `m.lambda_peak` is not constant, and a
-model with a strictly constant `C` reproduces that drift, because it comes from
-the slope of the lamp spectrum pulling the observed maximum off the true blaze
-peak.*
+decade deep at the right answer. Right: `m.lambda_peak` drifts by ~800 nm across
+the array. Part of it is the chromatic `C` (dashed), the rest is the slope of
+the lamp spectrum pulling each observed maximum off the true blaze peak. The
+model reproduces both.*
 
 `fit_blaze.py` has this built in as `diffraction_orders()`. It handles orders
 stored either way round (blue to red or red to blue) and a subset of the array.
@@ -130,7 +155,7 @@ extracted flat-lamp spectrum and its wavelength solution. NaNs are ignored.
 
 | file | content |
 |---|---|
-| `blaze_model.fits` | the model spectrum, same shape as the input, fitted parameters in the header (`MODCST`, `MODBETA`, `MODTHETA`, `MODTR*`, ...) |
+| `blaze_model.fits` | the model spectrum, same shape as the input, fitted parameters in the header (`MODCA0`, `MODCA1`, `MODBETA`, `MODASYM`, ...) and the spline knots in a `TRANS_KNOTS` table |
 | `blaze_model_debug.pdf` | 4 pages: observed vs model over the whole range, the model components separated, a panel per order, and the peak-drift check |
 | `blaze_orders.pdf` | the order identification from `mkblaze.py` |
 
@@ -157,7 +182,6 @@ Everything lives in the constants at the top of `fit_blaze.py`:
 | `NPOLY` | 21 | order of the polynomial, only with `TRANSMISSION = 'poly'` |
 | `WAVE_FIT_MAX` | 2500 | red limit of the **fitted** range. The model is still evaluated beyond it, as an extrapolation |
 | `SIGMA_CLIP` | 5 | rejection threshold, in units of the residual rms |
-| `THETA_B0` | 45 deg | starting blaze angle. It is fitted, this is only a neutral start |
 
 With the polynomial, `NPOLY` is the knob that matters most. The knots are stored
 in a `TRANS_KNOTS` table extension of `blaze_model.fits`, so the model can be
@@ -167,11 +191,12 @@ rebuilt from that file and the wavelength solution, without re-fitting.
 
 ```
 diffraction orders 79 to 31
-C = 76742.3 nm from the blaze peaks, 76847.2 nm after the fit (+0.137%)
-blaze width beta   = 0.8546
-blaze angle        = 63.39 deg (R2.0 grating)
-groove spacing     = 23.27 grooves/mm
-obs/model - 1      : median 2.36%, rms 6.67%, median per-order rms 4.48%
+C(lambda)          = 76969.79 - 0.11474 lambda   [nm]
+                     76859.1 at 965 nm, 76798.1 at 1496 nm, 76684.1 at 2490 nm
+                     (76742.3 from the blaze peaks, taken as flat)
+blaze width beta   = 0.8556
+asymmetry asym     = -3.432
+obs/model - 1      : median 0.90%, rms 4.26%, median per-order rms 1.64%
 ```
 
 ![three orders close up](docs/orders_zoom.png)
@@ -179,15 +204,16 @@ obs/model - 1      : median 2.36%, rms 6.67%, median per-order rms 4.48%
 *Three orders at full scale. The asymmetry of the observed profile is real and
 the un-linearised `sinc^2` follows most of it.*
 
-Two sanity checks worth pointing at:
+Two things worth pointing at:
 
-* **The grating comes out right.** SPIRou uses an R2 échelle (tan(theta_b) = 2,
-  63.43 deg) ruled at 23.2 grooves/mm. The fit gives 63.39 deg and 23.27
-  grooves/mm, within 0.3%, and neither number was ever given to the code.
-* `m.lambda_peak` is not quite constant across the array, it drifts by ~800 nm.
-  That drift is not a failure of the constant `C`, it is the slope of the lamp
-  spectrum pulling the observed maximum off the true blaze peak. A model with a
-  strictly constant `C` reproduces it, see page 4 of the debug PDF.
+* **`C` is chromatic, and it matters.** Letting it vary linearly with
+  wavelength takes the median residual from 2.35% to 0.90% and the median
+  per-order rms from 4.47% to 1.64%. The model then follows the observed peak
+  positions order by order, with no systematic offset left (page 4 of the debug
+  PDF).
+* `m.lambda_peak` drifts by ~800 nm across the array, far more than the 0.23%
+  change of `C` (175 nm). The rest is the slope of the lamp spectrum pulling the
+  observed maximum off the true blaze peak, and the model reproduces it.
 
 ### A second instrument
 
@@ -196,65 +222,68 @@ gap between J and H):
 
 ```
 diffraction orders 149 to 75
-blaze angle        = 76.09 deg (R4.0 grating)
-groove spacing     = 13.38 grooves/mm
-obs/model - 1      : median 1.67%, median per-order rms 3.10%
+C(lambda)          = 145128.85 - 0.08111 lambda   [nm], -0.055% across the array
+blaze width beta   = 0.8586
+asymmetry asym     = +3.495
+obs/model - 1      : median 1.20%, median per-order rms 1.85%
 ```
 
-NIRPS uses an R4 échelle with a published blaze angle of 76 deg
-([Bach Research contract](https://www.laserfocusworld.com/test-measurement/spectroscopy/article/16569072/nirps-consortium-awards-bach-research-echelle-grating-contract-for-exoplanet-research)),
-again recovered without being told. The NIRPS files are not in this repository.
+`C` is chromatic there too, about four times less than on SPIRou. The NIRPS
+files are not in this repository.
 
 ### Spline or polynomial
 
-Same data, same settings, only the transmission model changes:
+Same data, same settings, only the model changes:
 
-| transmission | median `obs/model - 1` | rms | `theta_b` | grooves/mm |
+| | median `obs/model - 1` | rms | median per-order rms | `C` change |
 |---|---|---|---|---|
-| **SPIRou**, polynomial, order 11 | 3.06% | 5.69% | 65.26 deg | 23.64 |
-| polynomial, order 21 | 2.70% | 5.13% | 65.38 deg | 23.66 |
-| **linear spline** | **2.36%** | 6.67% | **63.39 deg** | **23.27** |
-| cubic spline | 2.39% | 6.41% | 63.10 deg | 23.21 |
-| **NIRPS**, polynomial, order 11 | 4.96% | 24.2% | 64.37 deg | 12.43 |
-| polynomial, order 21 | 4.51% | 26.2% | 75.90 deg | 13.37 |
-| **linear spline** | **1.67%** | 27.2% | **76.09 deg** | 13.38 |
-| cubic spline | 1.68% | 27.7% | 75.71 deg | 13.36 |
+| **SPIRou**, **linear spline, chromatic C** | **0.90%** | 4.26% | 1.64% | -0.228% |
+| linear spline, constant C | 2.35% | 6.68% | 4.47% | |
+| polynomial order 21, chromatic C | 1.28% | **2.29%** | **1.46%** | -0.229% |
+| **NIRPS**, **linear spline, chromatic C** | **1.20%** | 26.4% | **1.85%** | -0.055% |
+| linear spline, constant C | 1.66% | 24.7% | 3.21% | |
+| polynomial order 21, chromatic C | 4.32% | 25.1% | 2.65% | -0.046% |
 
-The spline wins on the typical pixel, by a factor of three on NIRPS, and it is
-the one that gets the grating right on SPIRou: a polynomial stiff enough to
-miss the structure of the transmission leaves tilts inside the orders, and the
-blaze angle absorbs them. The polynomial keeps a lower global rms on SPIRou,
+The spline wins on the typical pixel on both instruments, by a factor of 3.6 on
+NIRPS. On SPIRou the order 21 polynomial keeps a lower global and per-order rms,
 because it spreads its error more evenly into the wings, where the spline only
-answers to the peak.
+answers to the peak. The chromatic term helps whichever transmission is used.
 
 The decisive argument is outside the fitted range. With `WAVE_FIT_MAX = 2400` on
-SPIRou, the linear spline is off by a median 31% on the pixels it did not see,
-the cubic one by 12%, and the order 21 polynomial by 2e14%. The linear and
-cubic splines differ by 0.15% (median) inside the fitted range; the linear one
-is the default because it cannot overshoot. Its price is a small break of slope
-at every knot: carried over one free spectral range, the change of slope is worth
-1.6% in flux in a typical order, 6% at worst.
+SPIRou, the linear spline is off by a median 26% on the pixels it did not see,
+the cubic one by 18%, and the order 21 polynomial by 2e7%. The linear and cubic
+splines differ by 0.19% (median) inside the fitted range; the linear one is the
+default because it cannot overshoot. Its price is a small break of slope at
+every knot: carried over one free spectral range, the change of slope is worth
+1.9% in flux in a typical order, and much more at the K-band cut-off where the
+transmission bends hardest.
 
 ## Limitations
 
 * **The global rms is set by a handful of orders** where the transmission
   changes within a single free spectral range, which one knot per order cannot
-  follow: the K-band cut-off on SPIRou (orders 31 to 38), the red end (75 to 78)
-  and the J/H gap (104, 105) on NIRPS. Leave those six orders out and both
-  instruments sit at 4.6% rms. The script prints the median of the per-order
-  rms, which is the fairer summary.
-* **Inside an order, the limit is the `sinc^2` shape itself**, about 4 to 5%
-  rms. The spline pins every peak, so what is left is the fall-off towards the
-  edges of the order.
+  follow: the blue and red ends of SPIRou (orders 77 to 79, 31, 33, 35), the red
+  end (75, 76, 78), the J/H gap (104, 105) and the bluest order on NIRPS. Leave
+  the six worst orders out and the rms drops to 1.98% on SPIRou and 3.57% on
+  NIRPS. The script prints the median of the per-order rms, which is the fairer
+  summary; half the orders sit between 1.2 and 2.4% (SPIRou), 1.3 and 2.7%
+  (NIRPS).
+* **A linear `C(lambda)` leaves a small curvature.** The observed peaks now sit
+  on the model on average (mean offset +3 pixels, 23 pixels rms), but with a
+  smooth pattern, from -50 pixels at order 79 to +20 around order 45. A quadratic term would take it
+  out (it lowers the fit cost by another 30% on SPIRou and does nothing on
+  NIRPS); `C` is kept linear by choice.
 * **Beyond the fitted range the transmission is deliberately left free**, not
   clamped, so that the model stays smooth. The spline carries on with its end
   segments; a high-order polynomial extrapolates violently. Check the model
   before using it outside the fitted range.
-* `theta_b` is **only loosely constrained on the low side**. With the spline, the
-  minimum sits on the true value for both instruments (63.4 deg on SPIRou, 76 deg
-  on NIRPS), but at 45 deg the cost is only 3% (SPIRou) to 6% (NIRPS) higher,
-  while it climbs steeply above the true value. Treat the fitted angle as a
-  consistency check, not a measurement.
+* **`asym` is a shape parameter, not a blaze angle.** In Littrow it would be
+  `tan(theta_b)^2 / 2 - 1`, i.e. +1 for SPIRou's R2 grating and +7 for NIRPS's
+  R4. With `C` held constant the fit did land there (63.4 and 76 deg), but that
+  was the asymmetry standing in for the missing chromatic term: once `C` is
+  allowed to vary, SPIRou wants -3.4, which no grating angle can give, and the
+  NIRPS value moves between +2.7 and +3.5 depending on the transmission model
+  and the clipping. Do not read a grating geometry into it.
 * APERO thresholds its blaze at 25% of the peak, so only the top of the `sinc^2`
   is ever constrained on this data.
 

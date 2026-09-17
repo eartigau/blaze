@@ -11,17 +11,22 @@
     It carries the global amplitude.
   * sinc^2 is the single-groove diffraction envelope of the grating. Its
     natural variable is the distance to the blaze peak counted in orders,
-    x = m * (lambda - lambda_blaze) / lambda_blaze, with m * lambda_blaze = C
-    assumed to be the same constant for every order. beta = 1 means a fully
-    illuminated groove, i.e. first zeros exactly one free spectral range from
-    the peak. The form below is the un-linearised one, which is slightly
-    asymmetric in wavelength and involves the blaze angle theta_b.
+    e = m * lambda / C - 1, with C = m * lambda_blaze. The argument is
+    beta * m * (e + asym * e^2). beta = 1 means a fully illuminated groove,
+    i.e. first zeros exactly one free spectral range from the peak. asym is
+    the second-order term that makes the envelope lopsided in wavelength; a
+    grating in Littrow would give asym = tan(theta_b)^2 / 2 - 1, but it is left
+    free because the data do not follow that relation.
+  * C is slightly chromatic, C(lambda) = a0 + a1 * lambda. C = 2 d sin(theta_b)
+    cos(gamma), and when the beam crosses a dispersive element before the
+    grating (a cross-disperser used in double pass, as in SPIRou) the
+    out-of-plane angle gamma, hence C, depends on wavelength.
   * dlambda/dpixel turns the photon density per unit wavelength into photons
     per pixel. The wavelength solution is not linear, so this term varies
     along an order and tilts it.
 
-Nothing here is specific to one instrument. C, beta and theta_b are fitted,
-and the diffraction orders are read off the wavelength solution itself.
+Nothing here is specific to one instrument. C(lambda), beta and asym are
+fitted, and the diffraction orders are read off the wavelength solution itself.
 
 usage: python fit_blaze.py [blaze.fits [wave.fits]]
 """
@@ -40,7 +45,6 @@ PEAK_HALF_WIDTH = 50             # pixels. The spline knot of an order is the
 NPOLY = 21                       # polynomial order, for TRANSMISSION = 'poly'
 HC_K = 1.438776877e7             # h*c/k_B in nm.K
 SIGMA_CLIP = 5.0
-THETA_B0 = np.radians(45.0)      # neutral start for the blaze angle, it is fitted
 WAVE_FIT_MAX = 2500.0            # do not let anything redder than this drive the
                                  # fit: the detector cut-off is far sharper than a
                                  # polynomial can follow. The model is still
@@ -77,18 +81,23 @@ dwave = np.abs(np.gradient(wave, axis=1))            # |dlambda/dpixel|, nm per 
 photon = 1.0 / (wave ** 4 * np.expm1(HC_K / (wave * TEFF)))   # blackbody, photons
 
 
-def envelope(cst, beta, theta_b):
-    """Grating blaze function. s = m*lambda/C is 1 at the blaze peak; the
-    argument reduces to beta*m*(lambda-lambda_blaze)/lambda_blaze near it."""
-    ss = mm * wave / cst
-    arg = beta * mm * np.cos(theta_b) / ss * (
-        ss * np.cos(theta_b) - np.sqrt(np.clip(1 - (ss * np.sin(theta_b)) ** 2, 1e-8, None)))
-    return np.sinc(arg) ** 2
+def grating_constant(c0, c1):
+    """C(lambda) = c0 + c1 * (lambda - lref): c0 is C at the reference
+    wavelength and c1 = dC/dlambda. Same line as a0 + a1 * lambda, written
+    around lref so that the two parameters are not correlated in the fit."""
+    return c0 + c1 * (wave - lref)
 
 
-def backbone(cst, beta, theta_b):
+def envelope(c0, c1, beta, asym):
+    """Grating blaze function. e = m*lambda/C - 1 is 0 at the blaze peak and
+    runs to about +-1/m at the edges of the order."""
+    ee = mm * wave / grating_constant(c0, c1) - 1
+    return np.sinc(beta * mm * (ee + asym * ee ** 2)) ** 2
+
+
+def backbone(c0, c1, beta, asym):
     """Everything in the model except the transmission."""
-    return photon * np.maximum(envelope(cst, beta, theta_b), 1e-8) * dwave
+    return photon * np.maximum(envelope(c0, c1, beta, asym), 1e-8) * dwave
 
 
 # valid is where there is data, fitted is what the fit is allowed to see, and
@@ -102,15 +111,16 @@ logobs[valid] = np.log(blaze[valid])
 # unconstrained red end stays a mild extrapolation rather than a runaway one
 wmin, wmax = np.min(wave[valid]), np.max(wave[valid])
 uu = 2 * (wave - wmin) / (wmax - wmin) - 1
+lref = np.median(wave[fitted])       # reference wavelength of C(lambda)
 # the spline knot of every order comes from a fixed window around its peak
 peaks = np.argmax(np.where(fitted, blaze, -np.inf), axis=1)
 pixel = np.arange(wave.shape[1])
 window = fitted & (np.abs(pixel[None, :] - peaks[:, None]) <= PEAK_HALF_WIDTH)
 
 
-def solve_trans(cst, beta, theta_b):
+def solve_trans(c0, c1, beta, asym):
     """log(transmission) for a given grating, with the residual map. It never
-    goes through the non-linear solver, which only sees C, beta and theta_b.
+    goes through the non-linear solver, which only sees the grating.
 
     spline: one knot per order, at its peak, worth the median of
     log(observed) - log(backbone) over +-PEAK_HALF_WIDTH pixels. The backbone
@@ -121,7 +131,7 @@ def solve_trans(cst, beta, theta_b):
     Returns log(transmission) and the residual, both on the full array, and
     the transmission parameters: knot wavelengths and values stacked for the
     spline, coefficients in u for the polynomial."""
-    yy = logobs - np.log(backbone(cst, beta, theta_b))
+    yy = logobs - np.log(backbone(c0, c1, beta, asym))
     if TRANSMISSION == 'spline':
         win = window & use
         rows = np.where(win.any(axis=1))[0]
@@ -141,26 +151,30 @@ def solve_trans(cst, beta, theta_b):
 # C = m * lambda_blaze = 2 * d * sin(theta_b) * cos(gamma) is the grating
 # spacing as the beam sees it: the optical path difference between two adjacent
 # grooves at the blaze peak, i.e. the groove spacing d of the ruling projected
-# along the blaze direction. One number for the whole array, since every order
-# is blazed by the same grooves. It starts from the mean of m*lambda over the
-# observed blaze peaks, then floats in the fit.
+# along the blaze direction. The grooves are the same for every order, but the
+# angle gamma at which the beam meets them can drift with wavelength, so C gets
+# a linear term. It starts flat, at the mean of m*lambda over the observed blaze
+# peaks, and the envelope starts symmetric; everything then floats.
 inrange = fitted.any(axis=1)
 cst_start = np.mean(morder[inrange] * wave[index[inrange], peaks[inrange]])
-guess = np.array([cst_start, 1.0, THETA_B0])
-bounds = ([cst_start / 10, 0.1, np.radians(5)], [cst_start * 10, 5.0, np.radians(89)])
+guess = np.array([cst_start, 0.0, 1.0, 0.0])
+slope_max = cst_start / lref
+bounds = ([cst_start / 10, -slope_max, 0.1, -100], [cst_start * 10, slope_max, 5.0, 100])
+scale = [cst_start, 1e-3 * slope_max, 1.0, 1.0]
 for loop in range(3):
     fit = least_squares(lambda p: solve_trans(*p)[1][use], guess, bounds=bounds,
-                        loss='soft_l1', f_scale=0.05, x_scale=[cst_start, 1.0, 1.0])
+                        loss='soft_l1', f_scale=0.05, x_scale=scale)
     guess = fit.x
     logt, res, trans_par = solve_trans(*fit.x)
     rms = np.std(res[use])
     use = fitted & (np.abs(res) < SIGMA_CLIP * rms)
-    print('pass {}: C = {:9.1f}   beta = {:.4f}   theta_b = {:5.2f} deg   '
-          'rms = {:5.2f}%   {} points kept'.format(
-              loop + 1, fit.x[0], fit.x[1], np.degrees(fit.x[2]), 100 * rms, use.sum()))
+    print('pass {}: C({:.0f}) = {:9.1f}   dC/dlambda = {:+.4f}   beta = {:.4f}   '
+          'asym = {:+.3f}   rms = {:5.2f}%   {} points kept'.format(
+              loop + 1, lref, *fit.x, 100 * rms, use.sum()))
 
-cst, beta, theta_b = fit.x
-logt, res, trans_par = solve_trans(cst, beta, theta_b)
+c0, c1, beta, asym = fit.x
+cst_a0, cst_a1 = c0 - c1 * lref, c1          # C(lambda) = a0 + a1 * lambda
+logt, res, trans_par = solve_trans(c0, c1, beta, asym)
 # the transmission is evaluated as it is everywhere, including past
 # WAVE_FIT_MAX where nothing constrains it. Clamping it there would be smooth in
 # value but would put a kink in the slope at the boundary, so it is left free.
@@ -170,7 +184,7 @@ trans = np.exp(logt)
 
 # the model is evaluated on every pixel of every order, including the ones the
 # pipeline threw away when it thresholded the blaze. Only the fit is restricted.
-model = backbone(cst, beta, theta_b) * trans
+model = backbone(c0, c1, beta, asym) * trans
 resid = blaze / model - 1
 
 print('')
@@ -179,15 +193,15 @@ print('fit restricted to lambda < {:.1f}: {} points used, {} left free'.format(
     WAVE_FIT_MAX, fitted.sum(), (valid & ~fitted).sum()))
 print('model evaluated on all {} pixels, {:.1f}% of which have no observed blaze'.format(
     model.size, 100 * np.mean(~valid)))
-print('C = m * lambda_blaze = 2.d.sin(theta_b).cos(gamma)')
-print('    {:.1f} from the blaze peaks, {:.1f} after the fit ({:+.1f}, {:+.3f}%)'.format(
-    cst_start, cst, cst - cst_start, 100 * (cst / cst_start - 1)))
+print('C = m * lambda_blaze = 2.d.sin(theta_b).cos(gamma) = a0 + a1 * lambda')
+print('    a0 = {:.2f}   a1 = {:+.5f}'.format(cst_a0, cst_a1))
+print('    {:.1f} from the blaze peaks; after the fit {:.1f} at {:.0f}, {:.1f} at {:.0f}, '
+      '{:.1f} at {:.0f}'.format(cst_start, cst_a0 + cst_a1 * wmin, wmin, c0, lref,
+                                cst_a0 + cst_a1 * wmax, wmax))
+print('    i.e. dlnC/dlnlambda = {:+.5f}, C changes by {:+.3f}% across the array'.format(
+    c1 * lref / c0, 100 * c1 * (wmax - wmin) / c0))
 print('blaze width beta = {:.4f}   (1 = first zeros one FSR from the peak)'.format(beta))
-print('blaze angle theta_b = {:.2f} deg   (R{:.1f} grating)'.format(
-    np.degrees(theta_b), np.tan(theta_b)))
-print('    implied groove spacing d = C/(2.sin(theta_b)) = {:.0f}, i.e. {:.2f} grooves/mm'
-      ' if lambda is in nm'.format(cst / (2 * np.sin(theta_b)),
-                                   1e6 / (cst / (2 * np.sin(theta_b)))))
+print('envelope asymmetry asym = {:+.3f}'.format(asym))
 if TRANSMISSION == 'spline':
     print('transmission: degree {} spline through {} order peaks, knot = median over '
           '+-{} px'.format(SPLINE_K, trans_par.shape[1], PEAK_HALF_WIDTH))
@@ -219,15 +233,16 @@ peak_obs = morder * wave[index, np.nanargmax(np.nan_to_num(blaze), axis=1)]
 peak_mod = morder * wave[index, np.nanargmax(np.nan_to_num(model), axis=1)]
 full = fitted.sum(axis=1) == valid.sum(axis=1)          # orders entirely fitted
 print('drift of m*lambda_peak over the {} fully fitted orders: {:.0f} observed, '
-      '{:.0f} reproduced by the model at constant C'.format(
+      '{:.0f} reproduced by the model'.format(
           full.sum(), np.ptp(peak_obs[full]), np.ptp(peak_mod[full])))
 
 hdu = fits.PrimaryHDU(model.astype('float32'))
 hdu.header['MODTEFF'] = (TEFF, 'blackbody temperature of the lamp [K]')
-hdu.header['MODCST'] = (cst, 'm*lambda_blaze, fitted')
-hdu.header['MODCST0'] = (cst_start, 'm*lambda_blaze, from the peaks')
+hdu.header['MODCA0'] = (cst_a0, 'm*lambda_blaze = MODCA0 + MODCA1 * lambda')
+hdu.header['MODCA1'] = (cst_a1, 'dC/dlambda')
+hdu.header['MODCST0'] = (cst_start, 'm*lambda_blaze, flat, from the peaks')
 hdu.header['MODBETA'] = (beta, 'blaze width, 1 = first zero one FSR away')
-hdu.header['MODTHETA'] = (np.degrees(theta_b), 'blaze angle [deg]')
+hdu.header['MODASYM'] = (asym, 'envelope asymmetry, arg = beta m (e + asym e^2)')
 hdu.header['MODWMAX'] = (WAVE_FIT_MAX, 'red limit of the fitted range')
 hdu.header['MODORD0'] = (morder[0], 'diffraction order of the first spectral order')
 hdu.header['MODTRANS'] = (TRANSMISSION, 'model of log(transmission)')
@@ -252,7 +267,8 @@ print('model spectrum written to blaze_model.fits')
 
 res = dict(wave=wave, blaze=blaze, model=model, morder=morder, valid=valid,
            fitted=fitted, resid=resid, offset=offset, photon=photon, trans=trans,
-           dwave=dwave, envelope=envelope(cst, beta, theta_b), cst=cst, wmax=wmax,
+           dwave=dwave, envelope=envelope(c0, c1, beta, asym),
+           cst_peak=cst_a0 + cst_a1 * wave[index, peaks], wmax=wmax,
            peak_obs=peak_obs, peak_mod=peak_mod, teff=TEFF,
            wave_fit_max=WAVE_FIT_MAX,
            knots=trans_par if TRANSMISSION == 'spline' else None,
@@ -278,7 +294,7 @@ def debug_plots(filename, res):
     morder, valid, fitted = res['morder'], res['valid'], res['fitted']
     resid, offset = res['resid'], res['offset']
     photon, trans, dwave = res['photon'], res['trans'], res['dwave']
-    env, cst, wmax = res['envelope'], res['cst'], res['wmax']
+    env, cst_peak, wmax = res['envelope'], res['cst_peak'], res['wmax']
     peak_obs, peak_mod = res['peak_obs'], res['peak_mod']
     teff, wfit = res['teff'], res['wave_fit_max']
     knots, trans_label = res['knots'], res['trans_label']
@@ -351,10 +367,10 @@ def debug_plots(filename, res):
 
         fig, ax = plt.subplots(2, 1, figsize=(9, 7))
         ax[0].plot(morder, peak_obs, 'ko-', ms=4, label='observed')
-        ax[0].plot(morder, peak_mod, 'ro-', ms=4, label='model, C constant')
-        ax[0].axhline(cst, color='b', ls='--', lw=.8, label='fitted C')
+        ax[0].plot(morder, peak_mod, 'ro-', ms=4, label='model')
+        ax[0].plot(morder, cst_peak, 'b--', lw=.8, label=r'fitted C($\lambda$) at the peak')
         ax[0].set(xlabel='diffraction order', ylabel=r'$m\lambda_{peak}$',
-                  title='the drift of the peak comes from the SED, not from C')
+                  title=r'peak position: observed, model, and C($\lambda$)')
         ax[0].legend()
         ax[1].plot(morder, 100 * offset, 'ko-', ms=4)
         ax[1].axhline(0, color='r', lw=.8)

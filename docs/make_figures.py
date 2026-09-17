@@ -53,8 +53,8 @@ wave = fits.getdata(WAVE_FILE)
 model, hdr = fits.getdata(MODEL_FILE, header=True)
 index = np.arange(wave.shape[0])
 
-cst, beta = hdr['MODCST'], hdr['MODBETA']
-theta_b, teff = np.radians(hdr['MODTHETA']), hdr['MODTEFF']
+a0, a1, beta = hdr['MODCA0'], hdr['MODCA1'], hdr['MODBETA']
+asym, teff = hdr['MODASYM'], hdr['MODTEFF']
 m0, mode = hdr['MODORD0'], hdr['MODTRANS']
 
 valid = np.isfinite(blaze) & np.isfinite(wave) & (blaze > 0)
@@ -64,10 +64,8 @@ mm = np.repeat(morder[:, None], wave.shape[1], axis=1).astype(float)
 
 # the four terms of the model, rebuilt from the header alone
 photon = 1.0 / (wave ** 4 * np.expm1(HC_K / (wave * teff)))
-ss = mm * wave / cst
-arg = beta * mm * np.cos(theta_b) / ss * (
-    ss * np.cos(theta_b) - np.sqrt(np.clip(1 - (ss * np.sin(theta_b)) ** 2, 1e-8, None)))
-env = np.sinc(arg) ** 2
+ee = mm * wave / (a0 + a1 * wave) - 1
+env = np.sinc(beta * mm * (ee + asym * ee ** 2)) ** 2
 dwave = np.abs(np.gradient(wave, axis=1))
 if mode == 'spline':
     knots = fits.getdata(MODEL_FILE, 'TRANS_KNOTS')
@@ -131,10 +129,12 @@ ax[0].set(yscale='log', xlabel='trial order of the first spectral order',
 ax[0].set_title('the order number is unambiguous', loc='left', color=INK)
 ax[1].plot(morder, peak_obs, 'o-', color=OBS, ms=3.5, lw=1.2, label='observed', zorder=3)
 ax[1].plot(morder, peak_mod, 'o-', color=MODEL, ms=3.5, lw=1.2,
-           label='model, C held constant', zorder=4)
-ax[1].axhline(cst, color=BLUE, ls='--', lw=1, label='fitted C')
+           label='model', zorder=4)
+peak_wave = wave[index, np.nanargmax(np.nan_to_num(blaze), axis=1)]
+ax[1].plot(morder, a0 + a1 * peak_wave, '--', color=BLUE, lw=1,
+           label=r'fitted $C(\lambda) = a_0 + a_1\lambda$')
 ax[1].set(xlabel='diffraction order', ylabel=r'$m\,\lambda_{\rm peak}$ [nm]')
-ax[1].set_title('the drift of the peak is the lamp, not the grating', loc='left', color=INK)
+ax[1].set_title('where the peaks sit, and the chromatic C under them', loc='left', color=INK)
 ax[1].legend(loc='lower right')
 for a in ax:
     tidy(a)
