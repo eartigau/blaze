@@ -13,6 +13,7 @@ from astropy.io import fits
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from scipy.interpolate import InterpolatedUnivariateSpline
 
 BLAZE_FILE = 'FDFCD50E5Ff_pp_blaze_AB.fits'
 WAVE_FILE = 'FEF450D367a_pp_e2dsff_AB_wave_night_AB.fits'
@@ -54,8 +55,7 @@ index = np.arange(wave.shape[0])
 
 cst, beta = hdr['MODCST'], hdr['MODBETA']
 theta_b, teff = np.radians(hdr['MODTHETA']), hdr['MODTEFF']
-npoly, m0 = hdr['MODNPOLY'], hdr['MODORD0']
-coef = np.array([hdr['MODTR{}'.format(k)] for k in range(npoly + 1)])
+m0, mode = hdr['MODORD0'], hdr['MODTRANS']
 
 valid = np.isfinite(blaze) & np.isfinite(wave) & (blaze > 0)
 step = int(-np.sign(np.median(np.diff(wave[:, wave.shape[1] // 2]))))
@@ -69,9 +69,20 @@ arg = beta * mm * np.cos(theta_b) / ss * (
     ss * np.cos(theta_b) - np.sqrt(np.clip(1 - (ss * np.sin(theta_b)) ** 2, 1e-8, None)))
 env = np.sinc(arg) ** 2
 dwave = np.abs(np.gradient(wave, axis=1))
-wmin, wmax = np.min(wave[valid]), np.max(wave[valid])
-uu = 2 * (wave - wmin) / (wmax - wmin) - 1
-trans = np.exp(np.sum([coef[k] * uu ** k for k in range(npoly + 1)], axis=0))
+if mode == 'spline':
+    knots = fits.getdata(MODEL_FILE, 'TRANS_KNOTS')
+    spline = InterpolatedUnivariateSpline(knots['WAVE'], knots['LOGTRANS'],
+                                          k=hdr['MODSPLK'], ext=0)
+    trans = np.exp(spline(wave.ravel()).reshape(wave.shape))
+    trans_title = 'instrument transmission, a degree {} spline through the order peaks'.format(
+        hdr['MODSPLK'])
+else:
+    knots = None
+    npoly = hdr['MODNPOLY']
+    coef = np.array([hdr['MODTR{}'.format(k)] for k in range(npoly + 1)])
+    uu = 2 * (wave - hdr['MODWLO']) / (hdr['MODWHI'] - hdr['MODWLO']) - 1
+    trans = np.exp(np.sum([coef[k] * uu ** k for k in range(npoly + 1)], axis=0))
+    trans_title = 'instrument transmission, exp of a degree {} polynomial'.format(npoly)
 
 rebuilt = photon * np.maximum(env, 1e-8) * dwave * trans
 assert np.allclose(rebuilt, model, rtol=2e-6), 'header does not describe the model'
@@ -92,8 +103,8 @@ ax[0].plot([], [], color=OBS, lw=1.5, label='observed blaze')
 ax[0].plot([], [], color=MODEL, lw=1.2, label='model')
 ax[0].set(ylabel='flux [ADU]', ylim=(0, 1.12 * np.max(blaze[valid])),
           xlim=(wave.min(), wave.max()))
-ax[0].set_title('49 orders of a SPIRou flat lamp, and the model fitted to them',
-                loc='left', color=INK)
+ax[0].set_title('{} orders of a SPIRou flat lamp, and the model fitted to them'.format(
+    index.size), loc='left', color=INK)
 ax[0].legend(loc='upper left', ncol=2)
 ax[1].axhline(0, color=MODEL, lw=1)
 ax[1].set(xlabel='wavelength [nm]', ylabel='obs / model - 1  [%]', ylim=(-25, 25))
@@ -138,10 +149,14 @@ ax[0].plot(wave[valid][srt], photon[valid][srt] / photon[valid].max(), color=BLU
 ax[0].set(ylabel='photons / nm')
 ax[0].set_title('blackbody at {:.0f} K, in photon density'.format(teff),
                 loc='left', color=INK)
-ax[1].plot(wave[valid][srt], trans[valid][srt] / trans[valid].max(), color=BLUE, lw=1.6)
+norm = trans[valid].max()
+ax[1].plot(wave[valid][srt], trans[valid][srt] / norm, color=BLUE, lw=1.6, zorder=3)
+if knots is not None:
+    ax[1].plot(knots['WAVE'], np.exp(knots['LOGTRANS']) / norm, 'o', color=MODEL, ms=4,
+               zorder=4, label='one knot per order, at its peak')
+    ax[1].legend(loc='lower right')
 ax[1].set(ylabel='transmission', yscale='log')
-ax[1].set_title('instrument transmission, exp of a degree {} polynomial'.format(npoly),
-                loc='left', color=INK)
+ax[1].set_title(trans_title, loc='left', color=INK)
 for i in index:
     ax[2].plot(wave[i], env[i], color=colour[i], lw=1.1)
 ax[2].set(ylabel='blaze envelope', ylim=(0, 1.05))

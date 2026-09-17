@@ -28,7 +28,7 @@ model(m, i) = BB_photon(lambda, Teff) x Trans(lambda) x sinc^2(blaze) x dlambda/
 | term | what it is | why it matters |
 |---|---|---|
 | `BB_photon` | blackbody of the calibration lamp, in **photon** density: `1 / (lambda^4 (exp(hc/lambda.k.T) - 1))` | the detector counts photons, not energy. Using `B_lambda` instead shifts the peak of the lamp spectrum by hundreds of nm |
-| `Trans` | `exp(P(lambda))`, i.e. `log(transmission)` is a polynomial. Its constant term carries the global amplitude | filters, coatings, fibre and detector QE. It is by far the largest term, a factor of ~20 across the SPIRou range |
+| `Trans` | `log(transmission)` as a linear spline through the peaks of the orders (default), or as a polynomial. It carries the global amplitude | filters, coatings, fibre and detector QE. It is by far the largest term, a factor of ~30 across the SPIRou range |
 | `sinc^2` | single-groove diffraction envelope of the grating | the blaze proper, the only term that knows about `m` |
 | `dlambda/dpixel` | width of a pixel in wavelength | the wavelength solution is not linear, so this varies by ~28% along a SPIRou order and tilts every one of them |
 
@@ -56,13 +56,33 @@ asymmetric in wavelength and brings in the blaze angle `theta_b`.
 groove, i.e. the first zeros of the `sinc^2` fall exactly one free spectral
 range away from the peak.
 
+### The transmission
+
+Each order contributes one spline knot, placed at its observed peak. The knot is
+the median, over +-50 pixels around the peak, of
+
+```
+log(observed) - log(BB_photon x sinc^2 x dlambda/dpixel)
+```
+
+that is, the observed peak with the other three terms taken out first. They have
+to come out: the peak flux also carries the lamp, the blaze and the pixel width,
+and would count them twice otherwise. The knots are joined by straight lines in
+`log(transmission)`, and the end segments carry on beyond the first and last
+knot.
+
+A polynomial is still available (`TRANSMISSION = 'poly'`). The spline is the
+default because it is better where it counts, see [Spline or
+polynomial](#spline-or-polynomial) below.
+
 ### Free parameters
 
-Three non-linear parameters, `C`, `beta` and `theta_b`, plus the coefficients of
-the transmission polynomial. Because `log(transmission)` enters linearly, it is
-solved exactly by least squares at every step, so the non-linear solver only
-ever works in three dimensions. The fit runs in seconds on a 49 x 4088 array and
-is followed by two passes of sigma clipping.
+Three non-linear parameters, `C`, `beta` and `theta_b`. The transmission never
+goes through the non-linear solver: the spline knots are read straight off the
+data for the current grating parameters, and a polynomial would be solved by
+linear least squares, since `log(transmission)` enters linearly. The fit takes
+about a second on a 49 x 4088 array and is followed by two passes of sigma
+clipping.
 
 ---
 
@@ -131,22 +151,27 @@ Everything lives in the constants at the top of `fit_blaze.py`:
 | constant | default | meaning |
 |---|---|---|
 | `TEFF` | 5000 | blackbody temperature of the calibration lamp, in K |
-| `NPOLY` | 11 | order of the `log(transmission)` polynomial |
+| `TRANSMISSION` | `'spline'` | model of `log(transmission)`, `'spline'` or `'poly'` |
+| `SPLINE_K` | 1 | degree of the spline, 1 is linear between order peaks |
+| `PEAK_HALF_WIDTH` | 50 | half width, in pixels, of the window each knot is the median of |
+| `NPOLY` | 21 | order of the polynomial, only with `TRANSMISSION = 'poly'` |
 | `WAVE_FIT_MAX` | 2500 | red limit of the **fitted** range. The model is still evaluated beyond it, as an extrapolation |
 | `SIGMA_CLIP` | 5 | rejection threshold, in units of the residual rms |
 | `THETA_B0` | 45 deg | starting blaze angle. It is fitted, this is only a neutral start |
 
-`NPOLY` is the knob that matters most, see the limitations below.
+With the polynomial, `NPOLY` is the knob that matters most. The knots are stored
+in a `TRANS_KNOTS` table extension of `blaze_model.fits`, so the model can be
+rebuilt from that file and the wavelength solution, without re-fitting.
 
 ## Results on the included SPIRou data
 
 ```
 diffraction orders 79 to 31
-C = 76742.3 nm from the blaze peaks, 76850.2 nm after the fit (+0.141%)
-blaze width beta   = 0.8495
-blaze angle        = 65.26 deg (R2.2 grating)
-groove spacing     = 23.64 grooves/mm
-obs/model - 1      : median 3.06%, rms 5.69%
+C = 76742.3 nm from the blaze peaks, 76847.2 nm after the fit (+0.137%)
+blaze width beta   = 0.8546
+blaze angle        = 63.39 deg (R2.0 grating)
+groove spacing     = 23.27 grooves/mm
+obs/model - 1      : median 2.36%, rms 6.67%, median per-order rms 4.48%
 ```
 
 ![three orders close up](docs/orders_zoom.png)
@@ -156,29 +181,80 @@ the un-linearised `sinc^2` follows most of it.*
 
 Two sanity checks worth pointing at:
 
-* The fitted groove spacing, **23.64 grooves/mm**, lands within 2% of the 23.2
-  grooves/mm of the real SPIRou grating, which was never given to the code.
+* **The grating comes out right.** SPIRou uses an R2 échelle (tan(theta_b) = 2,
+  63.43 deg) ruled at 23.2 grooves/mm. The fit gives 63.39 deg and 23.27
+  grooves/mm, within 0.3%, and neither number was ever given to the code.
 * `m.lambda_peak` is not quite constant across the array, it drifts by ~800 nm.
   That drift is not a failure of the constant `C`, it is the slope of the lamp
   spectrum pulling the observed maximum off the true blaze peak. A model with a
   strictly constant `C` reproduces it, see page 4 of the debug PDF.
 
+### A second instrument
+
+The same script, unchanged, on a NIRPS flat (75 orders, 966 to 1954 nm, with the
+gap between J and H):
+
+```
+diffraction orders 149 to 75
+blaze angle        = 76.09 deg (R4.0 grating)
+groove spacing     = 13.38 grooves/mm
+obs/model - 1      : median 1.67%, median per-order rms 3.10%
+```
+
+NIRPS uses an R4 échelle with a published blaze angle of 76 deg
+([Bach Research contract](https://www.laserfocusworld.com/test-measurement/spectroscopy/article/16569072/nirps-consortium-awards-bach-research-echelle-grating-contract-for-exoplanet-research)),
+again recovered without being told. The NIRPS files are not in this repository.
+
+### Spline or polynomial
+
+Same data, same settings, only the transmission model changes:
+
+| transmission | median `obs/model - 1` | rms | `theta_b` | grooves/mm |
+|---|---|---|---|---|
+| **SPIRou**, polynomial, order 11 | 3.06% | 5.69% | 65.26 deg | 23.64 |
+| polynomial, order 21 | 2.70% | 5.13% | 65.38 deg | 23.66 |
+| **linear spline** | **2.36%** | 6.67% | **63.39 deg** | **23.27** |
+| cubic spline | 2.39% | 6.41% | 63.10 deg | 23.21 |
+| **NIRPS**, polynomial, order 11 | 4.96% | 24.2% | 64.37 deg | 12.43 |
+| polynomial, order 21 | 4.51% | 26.2% | 75.90 deg | 13.37 |
+| **linear spline** | **1.67%** | 27.2% | **76.09 deg** | 13.38 |
+| cubic spline | 1.68% | 27.7% | 75.71 deg | 13.36 |
+
+The spline wins on the typical pixel, by a factor of three on NIRPS, and it is
+the one that gets the grating right on SPIRou: a polynomial stiff enough to
+miss the structure of the transmission leaves tilts inside the orders, and the
+blaze angle absorbs them. The polynomial keeps a lower global rms on SPIRou,
+because it spreads its error more evenly into the wings, where the spline only
+answers to the peak.
+
+The decisive argument is outside the fitted range. With `WAVE_FIT_MAX = 2400` on
+SPIRou, the linear spline is off by a median 31% on the pixels it did not see,
+the cubic one by 12%, and the order 21 polynomial by 2e14%. The linear and
+cubic splines differ by 0.15% (median) inside the fitted range; the linear one
+is the default because it cannot overshoot. Its price is a small break of slope
+at every knot: carried over one free spectral range, the change of slope is worth
+1.6% in flux in a typical order, 6% at worst.
+
 ## Limitations
 
-* **The transmission polynomial is the limiting term**, not the grating physics.
-  Real transmission has structure a polynomial cannot follow (filter edges,
-  coatings). On this data the residual goes 9.5% rms at `NPOLY = 4`, 8.8% at 6,
-  5.7% at 11. A free multiplicative constant per order gets to ~4%, which is
-  roughly the floor set by the `sinc^2` shape itself.
-* **The blue and red ends are the worst**, because the blocking filters cut far
-  more sharply than any polynomial. `WAVE_FIT_MAX` exists to keep the red cut-off
-  from dragging the whole fit with it.
-* **Beyond the fitted range the polynomial is deliberately left free**, not
-  clamped, so that the model stays smooth. A high-order polynomial extrapolates
-  violently: check the model before using it outside the fitted range.
-* `theta_b` is **weakly constrained**. It only controls a subtle asymmetry of the
-  envelope, and the residual is nearly flat between 25 and 70 degrees. Do not
-  read the fitted value as a measurement of the grating geometry.
+* **The global rms is set by a handful of orders** where the transmission
+  changes within a single free spectral range, which one knot per order cannot
+  follow: the K-band cut-off on SPIRou (orders 31 to 38), the red end (75 to 78)
+  and the J/H gap (104, 105) on NIRPS. Leave those six orders out and both
+  instruments sit at 4.6% rms. The script prints the median of the per-order
+  rms, which is the fairer summary.
+* **Inside an order, the limit is the `sinc^2` shape itself**, about 4 to 5%
+  rms. The spline pins every peak, so what is left is the fall-off towards the
+  edges of the order.
+* **Beyond the fitted range the transmission is deliberately left free**, not
+  clamped, so that the model stays smooth. The spline carries on with its end
+  segments; a high-order polynomial extrapolates violently. Check the model
+  before using it outside the fitted range.
+* `theta_b` is **only loosely constrained on the low side**. With the spline, the
+  minimum sits on the true value for both instruments (63.4 deg on SPIRou, 76 deg
+  on NIRPS), but at 45 deg the cost is only 3% (SPIRou) to 6% (NIRPS) higher,
+  while it climbs steeply above the true value. Treat the fitted angle as a
+  consistency check, not a measurement.
 * APERO thresholds its blaze at 25% of the peak, so only the top of the `sinc^2`
   is ever constrained on this data.
 

@@ -6,8 +6,9 @@
   * BB_photon is a blackbody in PHOTON density, not in energy, because the
     detector counts photons. Dividing B_lambda by the photon energy hc/lambda
     gives  1 / (lambda^4 * (exp(hc/lambda.k.T) - 1)).
-  * Trans(lambda) = exp(P(lambda)): log(transmission) is a polynomial of
-    wavelength. Its constant term carries the global amplitude.
+  * Trans(lambda) = exp(S(lambda)): log(transmission) is either a spline
+    through the peaks of the orders (default) or a polynomial of wavelength.
+    It carries the global amplitude.
   * sinc^2 is the single-groove diffraction envelope of the grating. Its
     natural variable is the distance to the blaze peak counted in orders,
     x = m * (lambda - lambda_blaze) / lambda_blaze, with m * lambda_blaze = C
@@ -28,10 +29,15 @@ import sys
 
 from astropy.io import fits
 import numpy as np
+from scipy.interpolate import InterpolatedUnivariateSpline
 from scipy.optimize import least_squares
 
 TEFF = 5000.0                    # K, temperature of the flat lamp
-NPOLY = 11                       # polynomial order of log(transmission)
+TRANSMISSION = 'spline'          # model of log(transmission), 'spline' or 'poly'
+SPLINE_K = 1                     # spline degree, 1 = linear between order peaks
+PEAK_HALF_WIDTH = 50             # pixels. The spline knot of an order is the
+                                 # median over +- this around its observed peak
+NPOLY = 21                       # polynomial order, for TRANSMISSION = 'poly'
 HC_K = 1.438776877e7             # h*c/k_B in nm.K
 SIGMA_CLIP = 5.0
 THETA_B0 = np.radians(45.0)      # neutral start for the blaze angle, it is fitted
@@ -81,28 +87,55 @@ def envelope(cst, beta, theta_b):
 
 
 def backbone(cst, beta, theta_b):
-    """Everything in the model except the transmission polynomial."""
+    """Everything in the model except the transmission."""
     return photon * np.maximum(envelope(cst, beta, theta_b), 1e-8) * dwave
 
 
-# valid is where there is data, fitted is what the fit is allowed to see
+# valid is where there is data, fitted is what the fit is allowed to see, and
+# use is what is left of fitted once the sigma clipping has had its say
 valid = np.isfinite(blaze) & np.isfinite(wave) & (blaze > 0)
 fitted = valid & (wave < WAVE_FIT_MAX)
+use = fitted.copy()
+logobs = np.full(blaze.shape, np.nan)
+logobs[valid] = np.log(blaze[valid])
 # polynomial variable normalised to [-1, 1] over the whole array, so that the
 # unconstrained red end stays a mild extrapolation rather than a runaway one
 wmin, wmax = np.min(wave[valid]), np.max(wave[valid])
 uu = 2 * (wave - wmin) / (wmax - wmin) - 1
-vander = np.array([uu[fitted] ** k for k in range(NPOLY + 1)]).T
-logobs = np.log(blaze[fitted])
-keep = np.ones(logobs.size, dtype=bool)
+# the spline knot of every order comes from a fixed window around its peak
+peaks = np.argmax(np.where(fitted, blaze, -np.inf), axis=1)
+pixel = np.arange(wave.shape[1])
+window = fitted & (np.abs(pixel[None, :] - peaks[:, None]) <= PEAK_HALF_WIDTH)
 
 
-def solve_poly(cst, beta, theta_b):
-    """log(transmission) enters linearly, so solve it exactly for a given
-    grating and leave only C, beta and theta_b to the non-linear solver."""
-    yy = logobs - np.log(backbone(cst, beta, theta_b)[fitted])
-    coef = np.linalg.lstsq(vander[keep], yy[keep], rcond=None)[0]
-    return coef, yy - vander @ coef
+def solve_trans(cst, beta, theta_b):
+    """log(transmission) for a given grating, with the residual map. It never
+    goes through the non-linear solver, which only sees C, beta and theta_b.
+
+    spline: one knot per order, at its peak, worth the median of
+    log(observed) - log(backbone) over +-PEAK_HALF_WIDTH pixels. The backbone
+    comes out first because the observed peak also carries the blackbody, the
+    sinc^2 and the pixel width, which would otherwise be counted twice.
+    poly: log(transmission) enters linearly, solved by least squares.
+
+    Returns log(transmission) and the residual, both on the full array, and
+    the transmission parameters: knot wavelengths and values stacked for the
+    spline, coefficients in u for the polynomial."""
+    yy = logobs - np.log(backbone(cst, beta, theta_b))
+    if TRANSMISSION == 'spline':
+        win = window & use
+        rows = np.where(win.any(axis=1))[0]
+        kx = np.array([np.median(wave[i][win[i]]) for i in rows])
+        ky = np.array([np.median(yy[i][win[i]]) for i in rows])
+        srt = np.argsort(kx)
+        spline = InterpolatedUnivariateSpline(kx[srt], ky[srt], k=SPLINE_K, ext=0)
+        logt = spline(wave.ravel()).reshape(wave.shape)
+        par = np.array([kx[srt], ky[srt]])
+    else:
+        vander = np.array([uu[use] ** k for k in range(NPOLY + 1)]).T
+        par = np.linalg.lstsq(vander, yy[use], rcond=None)[0]
+        logt = np.sum([par[k] * uu ** k for k in range(NPOLY + 1)], axis=0)
+    return logt, yy - logt, par
 
 
 # C = m * lambda_blaze = 2 * d * sin(theta_b) * cos(gamma) is the grating
@@ -112,28 +145,28 @@ def solve_poly(cst, beta, theta_b):
 # is blazed by the same grooves. It starts from the mean of m*lambda over the
 # observed blaze peaks, then floats in the fit.
 inrange = fitted.any(axis=1)
-peaks = np.argmax(np.where(fitted, blaze, -np.inf), axis=1)
 cst_start = np.mean(morder[inrange] * wave[index[inrange], peaks[inrange]])
 guess = np.array([cst_start, 1.0, THETA_B0])
 bounds = ([cst_start / 10, 0.1, np.radians(5)], [cst_start * 10, 5.0, np.radians(89)])
 for loop in range(3):
-    fit = least_squares(lambda p: solve_poly(*p)[1][keep], guess, bounds=bounds,
+    fit = least_squares(lambda p: solve_trans(*p)[1][use], guess, bounds=bounds,
                         loss='soft_l1', f_scale=0.05, x_scale=[cst_start, 1.0, 1.0])
     guess = fit.x
-    coef, res = solve_poly(*fit.x)
-    rms = np.std(res[keep])
-    keep = np.abs(res) < SIGMA_CLIP * rms
+    logt, res, trans_par = solve_trans(*fit.x)
+    rms = np.std(res[use])
+    use = fitted & (np.abs(res) < SIGMA_CLIP * rms)
     print('pass {}: C = {:9.1f}   beta = {:.4f}   theta_b = {:5.2f} deg   '
           'rms = {:5.2f}%   {} points kept'.format(
-              loop + 1, fit.x[0], fit.x[1], np.degrees(fit.x[2]), 100 * rms, keep.sum()))
+              loop + 1, fit.x[0], fit.x[1], np.degrees(fit.x[2]), 100 * rms, use.sum()))
 
 cst, beta, theta_b = fit.x
-coef, res = solve_poly(cst, beta, theta_b)
-# the polynomial is evaluated as it is everywhere, including past WAVE_FIT_MAX
-# where nothing constrains it. Clamping it there would be smooth in value but
-# would put a kink in the slope at the boundary, so it is left free instead. The
-# model is therefore an extrapolation beyond that point, and can run high.
-trans = np.exp(np.sum([coef[k] * uu ** k for k in range(NPOLY + 1)], axis=0))
+logt, res, trans_par = solve_trans(cst, beta, theta_b)
+# the transmission is evaluated as it is everywhere, including past
+# WAVE_FIT_MAX where nothing constrains it. Clamping it there would be smooth in
+# value but would put a kink in the slope at the boundary, so it is left free.
+# Beyond its end knots the spline carries on with its end pieces (straight
+# lines for SPLINE_K = 1); a polynomial can run away much faster.
+trans = np.exp(logt)
 
 # the model is evaluated on every pixel of every order, including the ones the
 # pipeline threw away when it thresholded the blaze. Only the fit is restricted.
@@ -155,9 +188,13 @@ print('blaze angle theta_b = {:.2f} deg   (R{:.1f} grating)'.format(
 print('    implied groove spacing d = C/(2.sin(theta_b)) = {:.0f}, i.e. {:.2f} grooves/mm'
       ' if lambda is in nm'.format(cst / (2 * np.sin(theta_b)),
                                    1e6 / (cst / (2 * np.sin(theta_b)))))
-print('log(transmission) coefficients in u = 2*(lambda-{:.1f})/{:.1f}-1:'.format(
-    wmin, wmax - wmin))
-print('   ' + np.array2string(coef, precision=4))
+if TRANSMISSION == 'spline':
+    print('transmission: degree {} spline through {} order peaks, knot = median over '
+          '+-{} px'.format(SPLINE_K, trans_par.shape[1], PEAK_HALF_WIDTH))
+else:
+    print('log(transmission) coefficients in u = 2*(lambda-{:.1f})/{:.1f}-1:'.format(
+        wmin, wmax - wmin))
+    print('   ' + np.array2string(trans_par, precision=4))
 print('obs/model - 1 over the fitted range : median |.| = {:.2f}%   rms = {:.2f}%'.format(
     100 * np.median(np.abs(resid[fitted])), 100 * np.std(resid[fitted])))
 if (valid & ~fitted).any():
@@ -167,6 +204,14 @@ if (valid & ~fitted).any():
 offset = np.array([np.nanmedian(resid[i]) for i in index])
 print('   of which order-to-order offsets {:.2f}% rms, within-order {:.2f}% rms'.format(
     100 * np.std(offset), 100 * np.nanstd(resid - offset[:, None])))
+# a handful of orders where the transmission changes within one free spectral
+# range (filter edges) dominate the global rms, the per-order view is fairer
+per_order = np.array([np.std(resid[i][fitted[i]]) if fitted[i].any() else np.nan
+                      for i in index])
+worst = np.argsort(-np.nan_to_num(per_order))[:3]
+print('   median of the per-order rms {:.2f}%, worst orders {}'.format(
+    100 * np.nanmedian(per_order),
+    ', '.join('m={} ({:.0f}%)'.format(morder[i], 100 * per_order[i]) for i in worst)))
 
 # the peak of each order sits slightly off the blaze wavelength because the SED
 # is not flat across the order. A constant C therefore still produces a drift.
@@ -183,19 +228,36 @@ hdu.header['MODCST'] = (cst, 'm*lambda_blaze, fitted')
 hdu.header['MODCST0'] = (cst_start, 'm*lambda_blaze, from the peaks')
 hdu.header['MODBETA'] = (beta, 'blaze width, 1 = first zero one FSR away')
 hdu.header['MODTHETA'] = (np.degrees(theta_b), 'blaze angle [deg]')
-hdu.header['MODNPOLY'] = (NPOLY, 'order of the log(transmission) polynomial')
 hdu.header['MODWMAX'] = (WAVE_FIT_MAX, 'red limit of the fitted range')
 hdu.header['MODORD0'] = (morder[0], 'diffraction order of the first spectral order')
-for k in range(NPOLY + 1):
-    hdu.header['MODTR{}'.format(k)] = (coef[k], 'log(trans) coefficient of u^{}'.format(k))
-hdu.writeto('blaze_model.fits', overwrite=True)
+hdu.header['MODTRANS'] = (TRANSMISSION, 'model of log(transmission)')
+hdul = fits.HDUList([hdu])
+if TRANSMISSION == 'spline':
+    # the knots go in a table extension, one row per order peak
+    hdu.header['MODSPLK'] = (SPLINE_K, 'degree of the transmission spline')
+    hdu.header['MODPKHW'] = (PEAK_HALF_WIDTH, 'half width of the knot window [pix]')
+    hdul.append(fits.BinTableHDU.from_columns(
+        [fits.Column(name='WAVE', format='D', array=trans_par[0]),
+         fits.Column(name='LOGTRANS', format='D', array=trans_par[1])],
+        name='TRANS_KNOTS'))
+else:
+    hdu.header['MODNPOLY'] = (NPOLY, 'order of the log(transmission) polynomial')
+    hdu.header['MODWLO'] = (wmin, 'wavelength at u = -1')
+    hdu.header['MODWHI'] = (wmax, 'wavelength at u = +1')
+    for k in range(NPOLY + 1):
+        hdu.header['MODTR{}'.format(k)] = (trans_par[k],
+                                          'log(trans) coefficient of u^{}'.format(k))
+hdul.writeto('blaze_model.fits', overwrite=True)
 print('model spectrum written to blaze_model.fits')
 
 res = dict(wave=wave, blaze=blaze, model=model, morder=morder, valid=valid,
            fitted=fitted, resid=resid, offset=offset, photon=photon, trans=trans,
            dwave=dwave, envelope=envelope(cst, beta, theta_b), cst=cst, wmax=wmax,
-           peak_obs=peak_obs, peak_mod=peak_mod, teff=TEFF, npoly=NPOLY,
-           wave_fit_max=WAVE_FIT_MAX)
+           peak_obs=peak_obs, peak_mod=peak_mod, teff=TEFF,
+           wave_fit_max=WAVE_FIT_MAX,
+           knots=trans_par if TRANSMISSION == 'spline' else None,
+           trans_label=('degree {} spline'.format(SPLINE_K) if TRANSMISSION == 'spline'
+                        else 'P{}'.format(NPOLY)))
 
 
 
@@ -218,7 +280,8 @@ def debug_plots(filename, res):
     photon, trans, dwave = res['photon'], res['trans'], res['dwave']
     env, cst, wmax = res['envelope'], res['cst'], res['wmax']
     peak_obs, peak_mod = res['peak_obs'], res['peak_mod']
-    teff, npoly, wfit = res['teff'], res['npoly'], res['wave_fit_max']
+    teff, wfit = res['teff'], res['wave_fit_max']
+    knots, trans_label = res['knots'], res['trans_label']
     index = np.arange(wave.shape[0])
 
     with PdfPages(filename) as pdf:
@@ -230,8 +293,8 @@ def debug_plots(filename, res):
         ax[0].plot([], [], 'k-', label='observed blaze')
         ax[0].plot([], [], 'r-', label='model')
         ax[0].set(ylabel='flux',
-                  title=r'{:.0f} K blackbody $\times$ exp(P$_{{{}}}$) transmission $\times$ '
-                        r'sinc$^2$ blaze $\times$ d$\lambda$/dpix'.format(teff, npoly))
+                  title=r'{:.0f} K blackbody $\times$ transmission ({}) $\times$ '
+                        r'sinc$^2$ blaze $\times$ d$\lambda$/dpix'.format(teff, trans_label))
         ax[0].legend(loc='lower right')
         ax[0].set_ylim(0, 1.1 * np.max(blaze[valid]))
         for i in index:
@@ -251,6 +314,10 @@ def debug_plots(filename, res):
         ax[0].plot(wave[valid][srt], photon[valid][srt], 'k-')
         ax[0].set(ylabel='photons / nm', title='model components, {:.0f} K'.format(teff))
         ax[1].plot(wave[valid][srt], trans[valid][srt], 'k-')
+        if knots is not None:
+            ax[1].plot(knots[0], np.exp(knots[1]), 'o', color='r', ms=3,
+                       label='knots, one per order peak')
+            ax[1].legend(loc='lower right')
         ax[1].set(ylabel='transmission', yscale='log')
         for i in index:
             ax[2].plot(wave[i], env[i], '-', lw=.9)
@@ -292,8 +359,7 @@ def debug_plots(filename, res):
         ax[1].plot(morder, 100 * offset, 'ko-', ms=4)
         ax[1].axhline(0, color='r', lw=.8)
         ax[1].set(xlabel='diffraction order', ylabel='median obs/model - 1 [%]',
-                  title='left over order-to-order structure, the P{} transmission '
-                        'cannot follow it'.format(npoly))
+                  title='median offset per order, transmission: {}'.format(trans_label))
         plt.tight_layout()
         pdf.savefig(fig)
         plt.close(fig)
