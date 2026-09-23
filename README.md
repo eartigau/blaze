@@ -366,6 +366,16 @@ transmission bends hardest.
 * APERO thresholds its blaze at 25% of the peak, so only the top of the `sinc^2`
   is ever constrained on this data.
 
+## Order profiles from the detector
+
+[`order_profile/`](order_profile/) builds the 1D profile of an order straight
+from the detector pixels of a flat and their x map, resampled onto a regular
+grid by convolution with a Gaussian kernel, with the uncertainties propagated.
+The rows across the order see different parts of the slit, so the profile is
+built row by row and summed; pooling all the pixels instead turns the slit
+illumination into 8% noise. Details and figure in its
+[README](order_profile/README.md).
+
 ## Structure
 
 `fit_blaze.py` is split in two by a banner comment. Everything above it is the
